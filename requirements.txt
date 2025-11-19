@@ -1,0 +1,1 @@
+dotenv langchain langchain-community langchain-core langgraph langchain-groq langchain-openai
