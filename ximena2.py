@@ -63,6 +63,22 @@ class SurveyState(TypedDict, total=False):
     synthesized_insights: str
     final_report: str
 
+# ============================
+# NUEVO ESTADO PARA EL GRAFO DE COMPARACIÓN
+# ============================
+
+class ComparisonState(TypedDict, total=False):
+    """
+    Estado específico para el agente de comparación final.
+
+    Claves:
+    - purpose_now_report: El párrafo final del propósito actual.
+    - purpose_future_report: El párrafo final del propósito a 18 años.
+    - final_joint_conclusion: La conclusión conjunta de 2 líneas.
+    """
+    purpose_now_report: str
+    purpose_future_report: str
+    final_joint_conclusion: str
 
 # ============================
 # CONFIGURACIÓN DEL ENTORNO Y LLMs
@@ -267,11 +283,13 @@ def make_analysis_node(llm):
 
         # Extraemos el texto de la respuesta.
         insights_text = ai_response.content
+        # print(insights_text)
 
         # Devolvemos un fragmento de estado con los insights sintetizados.
         return {"synthesized_insights": insights_text}
 
     # Devolvemos la función que actuará como nodo dentro del grafo.
+    
     return analysis_node
 
 
@@ -329,7 +347,7 @@ def make_writing_node(llm):
                 f"Contexto de la pregunta: {question_context}.\n\n"
                 "A continuación tienes un resumen de insights agregados de la encuesta:\n\n"
                 f"{synthesized_insights}\n\n"
-                "Redacta UN SOLO PÁRRAFO (5-8 frases) que exprese de forma sintética "
+                "Redacta UN SOLO PÁRRAFO (1 linea) que exprese de forma sintética "
                 "un 'propósito común del empresariado colombiano' para este contexto. "
                 "Debe sonar como una declaración de propósito compartida, en tono profesional "
                 "y positivo, pero realista. No uses listas, ni viñetas, ni apartados, "
@@ -348,6 +366,65 @@ def make_writing_node(llm):
 
     # Devolvemos el nodo redactor.
     return writing_node
+
+# ============================
+# NODO 3: AGENTE COMPARADOR Y CONCLUYENTE (ASÍNCRONO)
+# ============================
+
+def make_comparison_node(llm):
+    """
+    Factoría de nodo para el 'agente comparador'.
+
+    El nodo:
+    - Recibe el párrafo de propósito actual y el de futuro.
+    - Llama al LLM para comparar la visión actual vs. futura.
+    - Devuelve 'final_joint_conclusion' con una conclusión de 2 líneas.
+    """
+
+    async def comparison_node(state: ComparisonState) -> dict:
+        """
+        Implementación concreta del nodo de comparación y conclusión (ASÍNCRONA).
+        """
+        # Recuperamos los dos párrafos de los estados previos.
+        purpose_now = state.get("purpose_now_report", "No disponible.")
+        purpose_future = state.get("purpose_future_report", "No disponible.")
+
+        # Mensaje de sistema: rol del modelo como estratega que sintetiza el cambio.
+        system_message = SystemMessage(
+            content=(
+                "Eres un estratega de alto nivel especializado en la evolución del "
+                "propósito empresarial. Tu tarea es analizar dos visiones de propósito "
+                "(actual y futuro) del empresariado colombiano y condensar el hallazgo "
+                "más significativo de esa transición en una conclusión conjunta."
+            )
+        )
+
+        # Mensaje humano: indicamos que queremos UN TEXTO DE DOS LÍNEAS.
+        human_message = HumanMessage(
+            content=(
+                "A continuación tienes la visión del Propósito Actual y la visión "
+                "del Propósito a 18 años del empresariado colombiano:\n\n"
+                "PROPÓSITO ACTUAL:\n"
+                f"{purpose_now}\n\n"
+                "PROPÓSITO A 18 AÑOS:\n"
+                f"{purpose_future}\n\n"
+                "Compara ambos propósitos y redacta **una única conclusión conjunta de solo "
+                "DOS LÍNEAS (máximo 20 palabras)** que capture la esencia de la evolución "
+                "o la continuidad clave observada. No uses viñetas. Solo las dos líneas de texto."
+            )
+        )
+
+        # Invocamos el LLM de forma ASÍNCRONA.
+        ai_response = await llm.ainvoke([system_message, human_message])
+
+        # Extraemos la conclusión conjunta.
+        conclusion_text = ai_response.content
+
+        # Devolvemos el estado con la conclusión final.
+        return {"final_joint_conclusion": conclusion_text}
+
+    # Devolvemos el nodo comparador.
+    return comparison_node
 
 
 # ============================
@@ -393,6 +470,34 @@ def build_survey_insight_graph(analysis_llm, writing_llm):
 
     return graph
 
+# ============================
+# CONSTRUCCIÓN DEL GRAFO DE COMPARACIÓN FINAL
+# ============================
+
+def build_comparison_graph(comparison_llm):
+    """
+    Construye y compila un StateGraph simple para el nodo de comparación.
+
+    Flujo:
+        ENTRY_POINT -> comparison_agent -> END
+    """
+    # Usamos el nuevo estado para este grafo.
+    builder = StateGraph(ComparisonState)
+
+    # Creamos el nodo a partir del LLM (usaremos el LLM redactor, por ejemplo).
+    comparison_node = make_comparison_node(comparison_llm)
+
+    # Registramos el nodo.
+    builder.add_node("comparison_agent", comparison_node)
+
+    # Definimos el flujo simple.
+    builder.set_entry_point("comparison_agent")
+    builder.add_edge("comparison_agent", END)
+
+    # Compilamos y devolvemos.
+    graph = builder.compile()
+
+    return graph
 
 # ============================
 # EJECUCIÓN ASÍNCRONA PARA CADA PREGUNTA
@@ -463,11 +568,16 @@ async def main_async():
     analysis_llm = build_groq_chat_model()
     writing_llm = build_groq_chat_model()
 
+    # Asumimos que el mismo LLM 'writing_llm' se usará para la comparación.
+    comparison_llm = writing_llm
+
     # 3) Construir el grafo de LangGraph que usaremos para AMBAS preguntas.
     graph = build_survey_insight_graph(
         analysis_llm=analysis_llm,
         writing_llm=writing_llm
     )
+    # AÑADIR: 3.1) Construir el nuevo grafo de comparación final.
+    comparison_graph = build_comparison_graph(comparison_llm)
 
     # 4) Cargar las respuestas simuladas para cada pregunta.
     #    En tu entorno real, aquí llamarías a tu capa de acceso a datos.
@@ -487,12 +597,31 @@ async def main_async():
         run_pipeline_for_question(graph, purpose_future_answers, context_future),
     )
 
+    # AÑADIR: 6.1) Lanzar la ejecución del grafo de comparación.
+    # El estado inicial ahora contiene las salidas de las dos pipelines paralelas.
+    comparison_initial_state: ComparisonState = {
+        "purpose_now_report": now_report,
+        "purpose_future_report": future_report,
+    }
+    comparison_final_state = await comparison_graph.ainvoke(comparison_initial_state)
+    final_joint_conclusion = comparison_final_state.get("final_joint_conclusion", "Conclusión no generada.")
+
     # 7) Imprimir resultados (o guardarlos en BD, enviarlos a Power BI, etc.).
+    # print("\n===== PROPÓSITO COMÚN A 18 AÑOS DEL EMPRESARIADO COLOMBIANO =====\n")
+    # print(syn)
+    # print("\n==============================================================\n")
+    
+    
     print("\n===== PROPÓSITO COMÚN ACTUAL DEL EMPRESARIADO COLOMBIANO =====\n")
     print(now_report)
 
     print("\n===== PROPÓSITO COMÚN A 18 AÑOS DEL EMPRESARIADO COLOMBIANO =====\n")
     print(future_report)
+    print("\n==============================================================\n")
+
+    print("\n===== CONCLUSIÓN CONJUNTA DE LA EVOLUCIÓN DEL PROPÓSITO (2 LÍNEAS) =====\n")
+    print(final_joint_conclusion)
+
     print("\n==============================================================\n")
 
 
