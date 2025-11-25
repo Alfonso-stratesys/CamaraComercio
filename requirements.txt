@@ -1,7 +1,5 @@
-dotenv 
-langchain 
-langchain-community 
-langchain-core 
-langgraph 
-langchain-groq 
+httpx
+python-dotenv
 langchain-openai
+langchain-groq
+langchain-core
