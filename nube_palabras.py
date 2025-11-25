@@ -1,12 +1,13 @@
-# nube_palabras.py
+# nube_palabras_llm_filter.py
 #
-# Lee `proposito_hoy` de la tabla `respuestas`,
-# procesa el texto con NLTK (stopwords ES + stemming opcional),
-# calcula frecuencias (Bag of Words) y las guarda en `nube_palabras`.
+# Igual que nube_palabras.py, pero antes de subir a BD
+# pasa las palabras por un filtro LLM que decide cuáles son
+# relevantes en el contexto del propósito de empresas MEGA.
 
 import os
 import re
 import string
+import json
 from collections import Counter
 from typing import List, Dict
 
@@ -18,10 +19,18 @@ from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
 from nltk.tokenize import TweetTokenizer
 
+# LLM (mismo estilo que el resto de tu repo)
+from langchain_groq import ChatGroq
+from langchain_openai import AzureChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 
 # ===========================
 # CONFIG / ENTORNO
 # ===========================
+TOP_N = 20
+# cuántas palabras candidatas máximo mandamos al LLM
+LLM_MAX_CANDIDATES = 5 * TOP_N  # por ejemplo, top 100
+
 def load_environment() -> None:
     load_dotenv()
     if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
@@ -31,6 +40,32 @@ def load_environment() -> None:
     nltk.download("stopwords", quiet=True)
     nltk.download("punkt", quiet=True)
 
+    if not (os.getenv("GROQ_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")):
+        print("[AVISO] No hay configuración de LLM (GROQ_API_KEY o AZURE_OPENAI_API_KEY).")
+
+
+def build_llm():
+    """
+    Usa Azure si tiene deployment configurado, si no Groq.
+    """
+    if os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_DEPLOYMENT_ANALYSIS"):
+        return AzureChatOpenAI(
+            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT_ANALYSIS"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            temperature=0.0,
+            timeout=30,
+            max_retries=2,
+        )
+    elif os.getenv("GROQ_API_KEY"):
+        return ChatGroq(
+            api_key=os.getenv("GROQ_API_KEY"),
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.0,
+            timeout=30,
+            max_retries=2,
+        )
+    else:
+        raise RuntimeError("No se encontró configuración de LLM (ni Azure ni Groq).")
 
 # ===========================
 # LECTURA DE RESPUESTAS
@@ -69,7 +104,6 @@ def fetch_purpose_now_answers() -> List[str]:
 # ===========================
 # PREPROCESADO NLTK (tipo process_tweet)
 # ===========================
-# preparamos objetos globales para no recrearlos en cada llamada
 _STEMMER = SnowballStemmer("spanish")
 _STOPWORDS_ES = set(stopwords.words("spanish"))
 _PUNCT = set(string.punctuation) | {"¿", "¡", "…", "“", "”", "«", "»"}
@@ -79,21 +113,12 @@ _TOKENIZER = TweetTokenizer(preserve_case=False, strip_handles=True, reduce_len=
 def process_text(text: str, use_stem: bool = False) -> List[str]:
     """
     Limpia y tokeniza texto en castellano usando NLTK.
-
-    - pasa a minúsculas
-    - elimina URLs, menciones, números raros
-    - tokeniza estilo tweet
-    - elimina stopwords ES y puntuación
-    - aplica stemming (opcional)
     """
-    # minúsculas
     text = text.lower()
-
-    # quitar URLs, menciones, números sueltos, etc.
     text = re.sub(r"https?://\S+", " ", text)   # URLs
-    text = re.sub(r"@\w+", " ", text)          # @usuarios
-    text = re.sub(r"\d+", " ", text)           # números
-    text = re.sub(r"[\r\n\t]+", " ", text)     # saltos
+    text = re.sub(r"@\w+", " ", text)           # @usuarios
+    text = re.sub(r"\d+", " ", text)            # números
+    text = re.sub(r"[\r\n\t]+", " ", text)      # saltos
 
     tokens = _TOKENIZER.tokenize(text)
 
@@ -104,9 +129,9 @@ def process_text(text: str, use_stem: bool = False) -> List[str]:
         if w in _PUNCT:
             continue
         if len(w) <= 1:
-            continue  # descarta tokens muy cortos
+            continue
         if not any(ch.isalpha() for ch in w):
-            continue  # descarta tokens sin letras
+            continue
 
         if use_stem:
             w = _STEMMER.stem(w)
@@ -116,13 +141,9 @@ def process_text(text: str, use_stem: bool = False) -> List[str]:
 
 
 # ===========================
-# FRECUENCIAS (tipo build_freqs sin label)
+# FRECUENCIAS
 # ===========================
 def build_freqs(texts: List[str]) -> Dict[str, int]:
-    """
-    Bag of Words simple:
-    devuelve dict palabra -> frecuencia total en el corpus.
-    """
     freqs = Counter()
     for text in texts:
         for word in process_text(text):
@@ -132,13 +153,97 @@ def build_freqs(texts: List[str]) -> Dict[str, int]:
 
 
 # ===========================
+# FILTRADO LLM DE PALABRAS RELEVANTES
+# ===========================
+def filter_relevant_words_with_llm(
+    candidate_words: List[str],
+    llm,
+) -> List[str]:
+    """
+    Envía una lista de palabras al LLM para que filtre SOLO las
+    relevantes al contexto:
+      - propósito de empresas colombianas
+      - proyecto MEGA
+
+    Devuelve una lista de palabras aceptadas.
+    """
+
+    if not candidate_words:
+        return []
+
+    # Por seguridad, eliminamos duplicados preservando orden
+    seen = set()
+    unique_words = []
+    for w in candidate_words:
+        if w not in seen:
+            unique_words.append(w)
+            seen.add(w)
+
+    # Construimos prompt
+    system = SystemMessage(content=(
+        "Eres un analista de texto para una encuesta sobre el propósito "
+        "de diferentes empresas colombianas que participan en el proyecto "
+        "MEGA de la Cámara de Comercio.\n"
+        "Te doy una lista de palabras que aparecen en las respuestas. "
+        "Debes seleccionar SOLO aquellas que sean relevantes como conceptos "
+        "de propósito empresarial, estrategia, impacto, valores, clientes, "
+        "stakeholders, innovación, crecimiento, sostenibilidad, etc.\n"
+        "Descarta palabras genéricas o poco informativas como 'respuesta', "
+        "'pregunta', 'empresa', 'hoy', 'mañana', 'realizar', etc."
+    ))
+
+    lista_palabras = "\n".join(f"- {w}" for w in unique_words)
+
+    human = HumanMessage(content=(
+        "Lista de palabras detectadas (cada línea es una palabra):\n\n"
+        f"{lista_palabras}\n\n"
+        "Devuelve SOLO un JSON válido, sin markdown, con el siguiente formato:\n\n"
+        "{\n"
+        '  "palabras_relevantes": ["palabra1", "palabra2", ...]\n'
+        "}\n\n"
+        "Incluye únicamente las palabras que consideres relevantes según el contexto.\n"
+        "No inventes palabras nuevas."
+    ))
+
+    resp = llm.invoke([system, human])
+    text = resp.content
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        # Por si el modelo añade texto extra, buscamos un objeto JSON en bruto
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            print("[WARN] No se pudo parsear JSON de filtro LLM. Se usan todas las candidatas.")
+            return unique_words
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            print("[WARN] JSON de filtro LLM inválido. Se usan todas las candidatas.")
+            return unique_words
+
+    palabras_relevantes = data.get("palabras_relevantes", [])
+    if not isinstance(palabras_relevantes, list):
+        print("[WARN] Formato inesperado en 'palabras_relevantes'. Se usan todas las candidatas.")
+        return unique_words
+
+    # Limpiamos un poco la salida
+    cleaned = []
+    for w in palabras_relevantes:
+        if not isinstance(w, str):
+            continue
+        w2 = w.strip().lower()
+        if w2:
+            cleaned.append(w2)
+
+    print(f"[INFO] Palabras aceptadas por LLM: {len(cleaned)} de {len(unique_words)} candidatas")
+    return cleaned
+
+
+# ===========================
 # SUPABASE: LIMPIAR + INSERTAR
 # ===========================
 def clear_nube_palabras_table(table: str = "nube_palabras") -> None:
-    """
-    Elimina todas las filas de la tabla `nube_palabras`.
-    Asume que tiene columna `id` numérica.
-    """
     url = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_KEY"]
     endpoint = f"{url}/rest/v1/{table}"
@@ -150,7 +255,7 @@ def clear_nube_palabras_table(table: str = "nube_palabras") -> None:
         "Prefer": "return=minimal",
     }
 
-    params = {"id": "gt.0"}  # borra todo con id > 0
+    params = {"id": "gt.0"}
 
     with httpx.Client(timeout=30.0) as client:
         resp = client.delete(endpoint, headers=headers, params=params)
@@ -159,13 +264,11 @@ def clear_nube_palabras_table(table: str = "nube_palabras") -> None:
     print("[INFO] Tabla 'nube_palabras' limpiada correctamente.")
 
 
-def insert_word_frequencies(freqs: Dict[str, int], table: str = "nube_palabras", top_n: int | None = None) -> None:
-    """
-    Inserta pares (palabra, frecuencia) en la tabla `nube_palabras`.
-
-    - Si top_n está definido, solo sube las top_n palabras más frecuentes.
-    - Se envían ya ordenadas de mayor a menor frecuencia.
-    """
+def insert_word_frequencies(
+    freqs: Dict[str, int],
+    table: str = "nube_palabras",
+    top_n: int | None = None
+) -> None:
     if not freqs:
         print("[INFO] No hay frecuencias que insertar.")
         return
@@ -189,7 +292,6 @@ def insert_word_frequencies(freqs: Dict[str, int], table: str = "nube_palabras",
         "Prefer": "return=minimal",
     }
 
-    # Construimos las filas en el mismo orden ya ordenado por frecuencia
     rows = [{"palabra": w, "frecuencia": int(f)} for w, f in items]
 
     with httpx.Client(timeout=60.0) as client:
@@ -198,7 +300,6 @@ def insert_word_frequencies(freqs: Dict[str, int], table: str = "nube_palabras",
 
     print(f"[INFO] Filas insertadas en 'nube_palabras': {len(rows)}")
 
-TOP_N=20
 
 # ===========================
 # MAIN
@@ -213,13 +314,27 @@ def main():
 
     freqs = build_freqs(texts)
 
-    # opcional: mostrar top 20 por consola
-    print("\n[TOP 20 PALABRAS]")
-    for palabra, freq in sorted(freqs.items(), key=lambda x: x[1], reverse=True)[:20]:
+    # 1) Creamos lista de palabras candidatas ordenadas por frecuencia
+    sorted_items = sorted(freqs.items(), key=lambda x: x[1], reverse=True)
+    if LLM_MAX_CANDIDATES is not None:
+        sorted_items = sorted_items[:LLM_MAX_CANDIDATES]
+
+    candidate_words = [w for w, _ in sorted_items]
+
+    # 2) LLM filtra palabras relevantes
+    llm = build_llm()
+    relevant_words = filter_relevant_words_with_llm(candidate_words, llm)
+
+    # 3) Nos quedamos solo con las frecuencias de palabras aceptadas
+    filtered_freqs = {w: f for w, f in freqs.items() if w in relevant_words}
+
+    # opcional: mostrar top 20 filtrado por consola
+    print("\n[TOP PALABRAS RELEVANTES DESPUÉS DE LLM]")
+    for palabra, freq in sorted(filtered_freqs.items(), key=lambda x: x[1], reverse=True)[:TOP_N]:
         print(f"{palabra}: {freq}")
 
     clear_nube_palabras_table()
-    insert_word_frequencies(freqs,top_n=TOP_N)
+    insert_word_frequencies(filtered_freqs, top_n=TOP_N)
 
 
 if __name__ == "__main__":
