@@ -144,9 +144,9 @@ def build_groq_chat_model() -> ChatGroq:
     )
 
 
-# ============================
-# SUPABASE: CONTAR + LEER
-# ============================
+# =================================
+# SUPABASE: CONTAR + LEER + GUARDAR
+# =================================
 async def count_rows_supabase(table: str) -> int:
     URL = os.environ["SUPABASE_URL"]
     KEY = os.environ["SUPABASE_KEY"]
@@ -202,6 +202,105 @@ async def fetch_purpose_answers_from_supabase() -> Tuple[List[str], List[str]]:
             future_answers.append(a_future)
 
     return now_answers, future_answers
+
+async def insert_llm_results_to_supabase(
+    pregunta_1: str,
+    pregunta_2: str,
+    resumen_final: str,
+    table: str = "llm"
+) -> None:
+    """
+    Inserta una fila en la tabla `llm` con columnas:
+      - pregunta_1 (propósito actual)
+      - pregunta_2 (propósito 18 años)
+      - resumen_final (evolución / comparación)
+
+    Crea 1 fila por ejecución.
+    """
+    URL = os.environ["SUPABASE_URL"]
+    KEY = os.environ["SUPABASE_KEY"]
+    endpoint = f"{URL}/rest/v1/{table}"
+
+    headers = {
+        "apikey": KEY,
+        "Authorization": f"Bearer {KEY}",
+        "Content-Type": "application/json",
+        # opcional: evita volver con payload grande
+        "Prefer": "return=minimal",
+    }
+
+    payload = {
+        "pregunta_1": pregunta_1,
+        "pregunta_2": pregunta_2,
+        "resumen_final": resumen_final,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(endpoint, headers=headers, json=payload)
+        r.raise_for_status()
+
+async def clear_llm_table(table: str = "llm") -> None:
+    """
+    Elimina todas las filas de la tabla `llm`.
+
+    Asume que la tabla tiene una columna numérica `id` (la típica de Supabase).
+    Si tu PK se llama distinto, cambia 'id' por el nombre real.
+    """
+    URL = os.environ["SUPABASE_URL"]
+    KEY = os.environ["SUPABASE_KEY"]
+    endpoint = f"{URL}/rest/v1/{table}"
+
+    # 1) Leer los ids que existen
+    headers_get = {
+        "apikey": KEY,
+        "Authorization": f"Bearer {KEY}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            endpoint,
+            headers=headers_get,
+            params={"select": "id"}
+        )
+        r.raise_for_status()
+        rows = r.json()
+
+    if not rows:
+        print("[INFO] clear_llm_table: no hay filas que borrar.")
+        return
+
+    ids = [row["id"] for row in rows]
+    print(f"[INFO] clear_llm_table: ids a borrar -> {ids}")
+
+    # 2) Borrar esos ids explícitamente
+    headers_del = {
+        "apikey": KEY,
+        "Authorization": f"Bearer {KEY}",
+        "Accept": "application/json",
+        # queremos que devuelva las filas borradas para contarlas
+        "Prefer": "return=representation",
+    }
+
+    # Construimos 'in.(1,2,3,...)'
+    ids_str = ",".join(str(i) for i in ids)
+    params_del = {"id": f"in.({ids_str})"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(
+            endpoint,
+            headers=headers_del,
+            params=params_del,
+        )
+        resp.raise_for_status()
+        try:
+            deleted = resp.json()
+            num_deleted = len(deleted)
+        except ValueError:
+            num_deleted = 0
+
+    print(f"[INFO] clear_llm_table: filas borradas realmente = {num_deleted}")
+
 
 
 # ============================
@@ -388,6 +487,17 @@ async def main_async():
 
     print("\n===== CONCLUSIÓN CONJUNTA (2 líneas) =====\n")
     print(final_joint_conclusion)
+
+    # >>> AQUÍ: antes de insertar, limpiamos la tabla
+    await clear_llm_table()
+
+    # >>> NUEVO: guardar resultados en tabla llm
+    await insert_llm_results_to_supabase(
+        pregunta_1=now_report,
+        pregunta_2=future_report,
+        resumen_final=final_joint_conclusion
+    )
+    print("\n[INFO] Resultados guardados en la tabla 'llm'.\n")
 
     # << NUEVO: fin timer + tokens/coste
     t_end = time.perf_counter()
