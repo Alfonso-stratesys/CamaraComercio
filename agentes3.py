@@ -356,17 +356,18 @@ def make_writing_node_from_summaries(llm):
         system_message = SystemMessage(content=(
             "Eres un consultor senior que redacta resúmenes ejecutivos.\n"
             "Tu tarea es identificar qué idea tiene un peso mayoritario sobre la totalidad "
-            "de los encuestados (si la hay). Si hay división, indícalo y muestra porcentajes."
+            "de los encuestados (si la hay). Trata de representar variedad de respuestas cuando las haya si eres capaz de hacerlo sin que el texto totl supere 2-3" # Si hay división, indícalo y muestra porcentajes.
             "Si te llegan consultas vacías de contenido porque el contenido a resumir no tenía nada, indica claramente que no dispones de la información que precisas."
         ))
 
         human_message = HumanMessage(content=(
             f"Contexto: {question_context}\n\n"
-            "A continuación tienes 10 resúmenes parciales (cada uno de 1/10 de la muestra).\n"
+            f"A continuación tienes {N_CHUNK} resúmenes parciales (cada uno de 1/{N_CHUNK} de la muestra).\n"
             "Integra TODOS sin sesgo de orden y redacta un resumen ejecutivo final:\n\n"
             f"{summaries}\n\n"
             "Redacta 2-3 líneas que resuman rasgos comunes.\n"
-            "Si hay ideas divididas muestra claramente el porcentaje de aceptación."
+            "Si hay ideas dividias trata de que se pueda inferir del texto solamente si eso no te supondrá superar 2-3 líneas."
+            #"Si hay ideas divididas muestra claramente el porcentaje de aceptación."
         ))
 
         ai_response = await llm.ainvoke([system_message, human_message])
@@ -464,8 +465,8 @@ async def main_async():
 
     purpose_now_answers, purpose_future_answers = await fetch_purpose_answers_from_supabase()
 
-    context_now = "propósito ACTUAL de las empresas colombianas"
-    context_future = "propósito de las empresas colombianas dentro de 18 años"
+    context_now = "propósito ACTUAL de las empresas colombianas en el proyecto Mega"
+    context_future = "propósito de las empresas colombianas dentro de 18 años en el proyecto Mega"
 
     now_report, future_report = await asyncio.gather(
         run_batched_pipeline_for_question(analysis_llm, writing_llm, purpose_now_answers, context_now),
@@ -498,6 +499,7 @@ async def main_async():
         resumen_final=final_joint_conclusion
     )
     print("\n[INFO] Resultados guardados en la tabla 'llm'.\n")
+
 
     # << NUEVO: fin timer + tokens/coste
     t_end = time.perf_counter()
