@@ -1,4 +1,4 @@
-# Pipeline Backend - Bogota Chamber of Commerce
+# Pipeline Frontend - Bogota Chamber of Commerce
 # Ejecución MANUAL desde Azure DevOps
 # Build → Push to ACR → Deploy to Azure Container Apps
 
@@ -8,11 +8,11 @@ pr: none
 
 variables:
   - group: azure-resources
-  - group: backend-credentials
+  - group: supabase-credentials
   - name: dockerfilePath
     value: '$(Build.SourcesDirectory)/Dockerfile'
   - name: imageRepository
-    value: 'bogota-backend'
+    value: 'bogota-frontend'
   - name: tag
     value: '$(Build.BuildId)'
 
@@ -35,6 +35,18 @@ stages:
               command: login
               containerRegistry: 'acr-connection'
           
+          - task: Bash@3
+            displayName: 'Create .env file for build'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Creating .env file with Supabase credentials..."
+                cat > $(Build.SourcesDirectory)/.env << INNEREOF
+                VITE_SUPABASE_URL=$(VITE_SUPABASE_URL)
+                VITE_SUPABASE_KEY=$(VITE_SUPABASE_KEY)
+                INNEREOF
+                echo "Done creating .env file"
+          
           - task: Docker@2
             displayName: 'Build Docker image'
             inputs:
@@ -56,14 +68,22 @@ stages:
               tags: |
                 $(tag)
                 latest
+          
+          - task: Bash@3
+            displayName: 'Cleanup .env file'
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                rm -f $(Build.SourcesDirectory)/.env
 
   - stage: Deploy
     displayName: 'Deploy to Azure Container Apps'
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - deployment: DeployBackend
-        displayName: 'Deploy Backend to Container Apps'
+      - deployment: DeployFrontend
+        displayName: 'Deploy Frontend to Container Apps'
         pool:
           vmImage: 'ubuntu-latest'
         environment: 'production'
@@ -78,30 +98,22 @@ stages:
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     inlineScript: |
-                      echo "Deploying backend to Azure Container Apps..."
+                      echo "Deploying frontend to Azure Container Apps..."
                       
                       az containerapp update \
-                        --name $(BACKEND_APP_NAME) \
+                        --name $(FRONTEND_APP_NAME) \
                         --resource-group $(RESOURCE_GROUP) \
                         --image $(ACR_LOGIN_SERVER)/$(imageRepository):$(tag) \
-                        --cpu 1.0 \
-                        --memory 2.0Gi \
+                        --cpu 0.5 \
+                        --memory 1.0Gi \
                         --min-replicas 1 \
-                        --max-replicas 5 \
-                        --set-env-vars \
-                          SUPABASE_URL=$(SUPABASE_URL) \
-                          SUPABASE_KEY=$(SUPABASE_KEY) \
-                          AZURE_OPENAI_ENDPOINT=$(AZURE_OPENAI_ENDPOINT) \
-                          AZURE_OPENAI_API_KEY=$(AZURE_OPENAI_API_KEY) \
-                          AZURE_OPENAI_DEPLOYMENT_NAME=$(AZURE_OPENAI_DEPLOYMENT_NAME) \
-                          AZURE_OPENAI_DEPLOYMENT_ANALYSIS=$(AZURE_OPENAI_DEPLOYMENT_ANALYSIS) \
-                          GROQ_API_KEY=$(GROQ_API_KEY)
+                        --max-replicas 3
                       
-                      BACKEND_URL=$(az containerapp show \
-                        --name $(BACKEND_APP_NAME) \
+                      FRONTEND_URL=$(az containerapp show \
+                        --name $(FRONTEND_APP_NAME) \
                         --resource-group $(RESOURCE_GROUP) \
                         --query properties.configuration.ingress.fqdn \
                         --output tsv)
                       
-                      echo "Backend deployed successfully!"
-                      echo "Backend URL: https://$BACKEND_URL"
+                      echo "Frontend deployed successfully!"
+                      echo "Frontend URL: https://$FRONTEND_URL"

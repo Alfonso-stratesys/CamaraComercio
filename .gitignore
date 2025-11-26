@@ -1,1 +1,32 @@
-.venv.env
+# ------------------------------------
+# 1. ENTORNO VIRTUAL PYTHON (BACKEND)
+# ------------------------------------
+# Ignora la carpeta del entorno virtual
+backend/venv/
+# Ignora archivos de compilación de Python
+backend/__pycache__/
+*.pyc
+
+# ------------------------------------
+# 2. DEPENDENCIAS NODE (FRONTEND)
+# ------------------------------------
+# Ignora la carpeta de dependencias de Node
+frontend/node_modules/
+# Ignora los archivos de build de React (el resultado final para producción)
+frontend/dist/
+# Ignora los logs de npm
+npm-debug.log*
+
+# ------------------------------------
+# 3. ARCHIVOS DE SISTEMA Y CONFIGURACIÓN LOCAL
+# ------------------------------------
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
+
+# ------------------------------------
+# 4. VARIABLES DE ENTORNO (SENSIBLE)
+# ------------------------------------
+# Nunca subir claves API, contraseñas de DB, etc.
+.env
