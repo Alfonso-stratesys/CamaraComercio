@@ -407,14 +407,34 @@ def make_comparison_node(llm):
 # UTIL: cortar y chunkear en 5
 # ============================
 N_CHUNK=10
+N_CHUNK = 10
+
 def chunk_in_five(answers: List[str]) -> List[List[str]]:
+    """
+    Divide 'answers' en N_CHUNK trozos lo más equilibrados posible
+    SIN descartar respuestas.
+
+    - Si hay menos respuestas que N_CHUNK, algunos chunks tendrán 1 respuesta
+      y otros 0, pero no se pierde ninguna.
+    - Si hay resto, los primeros chunks tienen 1 elemento más.
+    """
     n = len(answers)
-    usable = (n // N_CHUNK) * N_CHUNK
-    truncated = answers[:usable]
-    if usable == 0:
-        return [[], [], [], [], []]
-    chunk_size = usable // N_CHUNK
-    return [truncated[i*chunk_size:(i+1)*chunk_size] for i in range(N_CHUNK)]
+    if n == 0:
+        return [[] for _ in range(N_CHUNK)]
+
+    base = n // N_CHUNK           # tamaño mínimo de cada chunk
+    resto = n % N_CHUNK           # cuántos chunks tendrán un elemento extra
+
+    chunks = []
+    start = 0
+    for i in range(N_CHUNK):
+        size = base + (1 if i < resto else 0)
+        end = start + size
+        chunks.append(answers[start:end])
+        start = end
+
+    return chunks
+
 
 
 # ============================
