@@ -309,7 +309,7 @@ async def clear_llm_table(table: str = "llm") -> None:
 def make_analysis_node(llm):
     async def analysis_node(state: SurveyState) -> dict:
         raw_answers = state.get("raw_answers", [])
-        question_context = state.get("question_context", "propósito de empresas colombianas en el proyecto Mega")
+        question_context = state.get("question_context", "propósito de empresas colombianas")
 
         if not raw_answers:
             return {"synthesized_insights": f"No hay respuestas para {question_context}."}
@@ -318,7 +318,7 @@ def make_analysis_node(llm):
 
         system_message = SystemMessage(content=(
             "Eres un analista de estrategia especializado en interpretar encuestas "
-            "sobre el propósito de las diferentes empresas Colombianas en el proyecto Mega."
+            "sobre el propósito de las diferentes empresas Colombianas."
             "Cíñete a analizar respuestas sobre esa temática, si alguna es sobre otra temática, ignórala."
             "Si llegases a no tener respuestas relacionadas con el tema de interés, indícalo amablemente."
         ))
@@ -348,7 +348,7 @@ def make_analysis_node(llm):
 def make_writing_node_from_summaries(llm):
     async def writing_node(state: SurveyState) -> dict:
         summaries = state.get("synthesized_insights", "")
-        question_context = state.get("question_context", "propósito de empresas colombianas en el proyecto Mega")
+        question_context = state.get("question_context", "propósito de empresas colombianas")
 
         if not summaries:
             return {"final_report": f"No hay insights para {question_context}."}
@@ -356,7 +356,7 @@ def make_writing_node_from_summaries(llm):
         system_message = SystemMessage(content=(
             "Eres un consultor senior que redacta resúmenes ejecutivos.\n"
             "Tu tarea es identificar qué idea tiene un peso mayoritario sobre la totalidad "
-            "de los encuestados (si la hay). Trata de representar variedad de respuestas cuando las haya si eres capaz de hacerlo sin que el texto totl supere 2-3" # Si hay división, indícalo y muestra porcentajes.
+            "de los encuestados (si la hay). Trata de representar variedad de respuestas cuando las haya si eres capaz de hacerlo sin que el texto total supere 2-3 líneas" # Si hay división, indícalo y muestra porcentajes.
             "Si te llegan consultas vacías de contenido porque el contenido a resumir no tenía nada, indica claramente que no dispones de la información que precisas."
         ))
 
@@ -386,14 +386,14 @@ def make_comparison_node(llm):
         purpose_future = state.get("purpose_future_report", "")
 
         system_message = SystemMessage(content=(
-            "Eres un estratega experto en evolución del propósito de las empresas colombianas en el proyecto Mega."
+            "Eres un estratega experto en la evolución del propósito de las empresas colombianas de ahora a los próximos 18 años."
         ))
         human_message = HumanMessage(content=(
             "PROPÓSITO ACTUAL:\n"
             f"{purpose_now}\n\n"
             "PROPÓSITO 18 AÑOS:\n"
             f"{purpose_future}\n\n"
-            "Compara y concluye en DOS líneas (máx 20 palabras)."
+            "Compara y concluye en DOS líneas (máx 25 palabras)."
         ))
 
         ai_response = await llm.ainvoke([system_message, human_message])
@@ -485,8 +485,8 @@ async def main_async():
 
     purpose_now_answers, purpose_future_answers = await fetch_purpose_answers_from_supabase()
 
-    context_now = "propósito ACTUAL de las empresas colombianas en el proyecto Mega"
-    context_future = "propósito de las empresas colombianas dentro de 18 años en el proyecto Mega"
+    context_now = "propósito ACTUAL de las empresas colombianas"
+    context_future = "propósito de las empresas colombianas dentro de 18 años"
 
     now_report, future_report = await asyncio.gather(
         run_batched_pipeline_for_question(analysis_llm, writing_llm, purpose_now_answers, context_now),
